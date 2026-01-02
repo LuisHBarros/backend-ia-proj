@@ -85,13 +85,16 @@ class ProcessMessageUseCase:
         if conversation_id:
             conversation = await self.repository.find_by_id(conversation_id)
             if conversation is None:
+                # If conversation_id provided but not found, create a new one
+                # This allows frontend to work even if conversation wasn't created via API first
                 if self.logger:
-                    self.logger.warning(
-                        "Conversation not found",
-                        conversation_id=conversation_id,
+                    self.logger.info(
+                        "Conversation ID provided but not found, creating new conversation",
+                        provided_conversation_id=conversation_id,
                         user_id=user_id
                     )
-                raise RepositoryError(f"Conversation {conversation_id} not found")
+                conversation = Conversation(user_id=user_id)
+                # Note: The conversation will get a new ID when saved, ignoring the provided one
         else:
             conversation = Conversation(user_id=user_id)
         

@@ -1,5 +1,6 @@
 """Main application entry point."""
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from app.infrastructure.config.settings import settings
 from app.infrastructure.config.validation import validate_configuration
 from app.api.routes import chat_router
@@ -33,6 +34,21 @@ async def startup_event():
     except ConfigurationError as e:
         logger.error(f"Configuration validation failed: {e}")
         raise  # Fail fast if configuration is invalid
+
+# Add CORS middleware (must be before other middlewares)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
 
 # Add middleware for correlation ID tracking
 app.add_middleware(CorrelationIDMiddleware)
