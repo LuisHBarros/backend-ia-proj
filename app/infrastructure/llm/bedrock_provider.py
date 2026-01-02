@@ -164,32 +164,53 @@ class BedrockProvider(LLMPort):
             # Process streaming response
             stream = response.get('body')
             if stream:
+                # NOTE: Performance Consideration
+                # The iteration over the boto3 stream (which reads from TCP socket)
+                # occurs in the main event loop thread. Under high load (thousands of
+                # concurrent connections), this could cause small blocking delays.
+                #
+                # Current solution: Acceptable for current scale. The initial API call
+                # is in a thread (asyncio.to_thread), but iteration is synchronous.
+                #
+                # Future optimization: For true async streaming at scale, iterate the
+                # stream in a separate thread and feed chunks into an asyncio.Queue:
+                #   - Thread reads from boto3 stream
+                #   - Puts chunks into asyncio.Queue
+                #   - This coroutine reads from queue and yields
+                # This would require more complex error handling and cleanup.
+                #
                 for event in stream:
-                    # Note: boto3 stream iterator is synchronous, but we're running
-                    # it in a thread, so this is acceptable for now
                     chunk = event.get('chunk')
                     if chunk:
                         chunk_bytes = chunk.get('bytes')
                         if chunk_bytes:
-                            chunk_json = json.loads(chunk_bytes.decode())
-                            
-                            # Extract text based on model type
-                            if "claude" in self.model_id.lower():
-                                # Claude 3 format
-                                if "delta" in chunk_json and "text" in chunk_json["delta"]:
-                                    yield chunk_json["delta"]["text"]
-                                elif "contentBlockDelta" in chunk_json:
-                                    delta = chunk_json["contentBlockDelta"].get("delta", {})
-                                    if "text" in delta:
-                                        yield delta["text"]
-                            elif "amazon" in self.model_id.lower():
-                                # Amazon Titan format
-                                if "outputText" in chunk_json:
-                                    yield chunk_json["outputText"]
-                            else:
-                                # Generic fallback - try to extract any text field
-                                if "text" in chunk_json:
-                                    yield chunk_json["text"]
+                            try:
+                                chunk_json = json.loads(chunk_bytes.decode())
+                                
+                                # Extract text based on model type
+                                if "claude" in self.model_id.lower():
+                                    # Claude 3 format
+                                    if "delta" in chunk_json and "text" in chunk_json["delta"]:
+                                        yield chunk_json["delta"]["text"]
+                                    elif "contentBlockDelta" in chunk_json:
+                                        delta = chunk_json["contentBlockDelta"].get("delta", {})
+                                        if "text" in delta:
+                                            yield delta["text"]
+                                elif "amazon" in self.model_id.lower():
+                                    # Amazon Titan format
+                                    if "outputText" in chunk_json:
+                                        yield chunk_json["outputText"]
+                                else:
+                                    # Generic fallback - try to extract any text field
+                                    if "text" in chunk_json:
+                                        yield chunk_json["text"]
+                            except (json.JSONDecodeError, KeyError, UnicodeDecodeError) as e:
+                                # Log parsing error but continue streaming
+                                # Don't break the entire stream for one bad chunk
+                                import logging
+                                logger = logging.getLogger(__name__)
+                                logger.warning(f"Failed to parse chunk: {e}")
+                                continue
         except Exception as e:
             raise RuntimeError(f"AWS Bedrock streaming API error: {str(e)}") from e
 

@@ -60,7 +60,16 @@ class PostgresRepository(RepositoryPort):
         )
     
     async def _create_tables(self):
-        """Create database tables if they don't exist."""
+        """
+        Create database tables if they don't exist.
+        
+        NOTE: In production, use Alembic migrations instead of this method.
+        This method is only for development/testing. For production:
+        1. Run: alembic upgrade head
+        2. Remove or disable this method
+        
+        See: alembic/ directory for migration management.
+        """
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     

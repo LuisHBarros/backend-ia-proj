@@ -112,6 +112,8 @@ class StreamMessageUseCase:
         
         # 3. Stream LLM response and accumulate chunks
         full_response_chunks = []
+        streaming_failed = False
+        error_message = None
         
         try:
             if self.logger:
@@ -127,27 +129,66 @@ class StreamMessageUseCase:
                     total_chunks=len(full_response_chunks)
                 )
         except Exception as e:
+            streaming_failed = True
+            error_message = str(e)
+            
             if self.logger:
                 self.logger.error(
-                    "LLM streaming failed",
-                    error=str(e),
-                    error_type=type(e).__name__
+                    "LLM streaming failed during generation",
+                    error=error_message,
+                    error_type=type(e).__name__,
+                    chunks_received=len(full_response_chunks),
+                    conversation_id=saved_conversation.id
                 )
-            raise LLMError(f"Failed to generate streaming LLM response: {str(e)}") from e
+            
+            # Save error state to conversation
+            try:
+                error_msg = Message(
+                    content=f"[Erro ao gerar resposta: {error_message}]",
+                    role="system"
+                )
+                conversation.add_message(error_msg)
+                await self.repository.save(conversation)
+                
+                if self.logger:
+                    self.logger.info(
+                        "Error state saved to conversation",
+                        conversation_id=conversation.id
+                    )
+            except Exception as save_error:
+                # If we can't save the error, log it but don't fail silently
+                if self.logger:
+                    self.logger.critical(
+                        "Failed to save error state to conversation",
+                        error=str(save_error),
+                        original_error=error_message
+                    )
+            
+            # Re-raise the original exception
+            raise LLMError(f"Failed to generate streaming LLM response: {error_message}") from e
         
         # 4. Create and save assistant message with full response
-        full_response = "".join(full_response_chunks)
-        assistant_message = Message(content=full_response, role="assistant")
-        conversation.add_message(assistant_message)
-        
-        final_conversation = await self.repository.save(conversation)
-        
-        if self.logger:
-            self.logger.info(
-                "Streaming message processed successfully",
-                conversation_id=final_conversation.id,
-                user_id=user_id,
-                messages_count=len(final_conversation.messages),
-                response_length=len(full_response)
-            )
+        # Only save if streaming completed successfully
+        if not streaming_failed and full_response_chunks:
+            full_response = "".join(full_response_chunks)
+            assistant_message = Message(content=full_response, role="assistant")
+            conversation.add_message(assistant_message)
+            
+            final_conversation = await self.repository.save(conversation)
+            
+            if self.logger:
+                self.logger.info(
+                    "Streaming message processed successfully",
+                    conversation_id=final_conversation.id,
+                    user_id=user_id,
+                    messages_count=len(final_conversation.messages),
+                    response_length=len(full_response)
+                )
+        elif not streaming_failed:
+            # Edge case: streaming completed but no chunks received
+            if self.logger:
+                self.logger.warning(
+                    "Streaming completed but no chunks received",
+                    conversation_id=saved_conversation.id
+                )
 
