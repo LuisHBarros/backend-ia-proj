@@ -1,6 +1,6 @@
 """OpenAI LLM provider implementation."""
 import os
-from typing import Optional
+from typing import Optional, AsyncGenerator
 from app.domain.ports.llm_port import LLMPort
 
 
@@ -79,4 +79,37 @@ class OpenAIProvider(LLMPort):
             return response.choices[0].message.content or ""
         except Exception as e:
             raise RuntimeError(f"OpenAI API error: {str(e)}") from e
+    
+    async def generate_stream(self, message: str) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming response using OpenAI API.
+        
+        Args:
+            message: The input message/prompt.
+            
+        Yields:
+            Chunks of the generated response as they become available.
+            
+        Raises:
+            Exception: If API call fails.
+        """
+        client = self._get_client()
+        
+        try:
+            stream = await client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": message}
+                ],
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=True
+            )
+            
+            async for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except Exception as e:
+            raise RuntimeError(f"OpenAI API streaming error: {str(e)}") from e
 

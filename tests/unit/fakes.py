@@ -3,7 +3,7 @@
 These fakes implement the domain ports (Protocols) and are used in unit tests
 to ensure the application layer depends only on domain ports, not concrete implementations.
 """
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, AsyncGenerator
 from app.domain.ports.llm_port import LLMPort
 from app.domain.ports.repository_port import RepositoryPort
 from app.domain.entities.conversation import Conversation
@@ -51,6 +51,30 @@ class FakeLLM(LLMPort):
             raise self.should_raise
         
         return self.response
+    
+    async def generate_stream(self, message: str) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming fake response.
+        
+        Args:
+            message: The input message.
+            
+        Yields:
+            Chunks of the fake response.
+        """
+        import asyncio
+        
+        self.called_with = message
+        self.call_count += 1
+        
+        if self.should_raise:
+            raise self.should_raise
+        
+        # Yield response in chunks
+        chunk_size = 5
+        for i in range(0, len(self.response), chunk_size):
+            yield self.response[i:i + chunk_size]
+            await asyncio.sleep(0.01)
 
 
 class FakeRepository(RepositoryPort):

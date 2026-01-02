@@ -35,6 +35,12 @@ class MessageRequestDTO(BaseModel):
         max_length=100,
         description="Conversation ID to continue existing conversation (optional)"
     )
+    model_id: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=200,
+        description="Optional model ID to override default model (e.g., 'gpt-4', 'claude-3-opus')"
+    )
     
     @validator("message")
     def validate_message_not_empty(cls, v):
@@ -49,7 +55,8 @@ class MessageRequestDTO(BaseModel):
             "example": {
                 "message": "Hello, how are you?",
                 "user_id": "user-123",
-                "conversation_id": "conv-456"
+                "conversation_id": "conv-456",
+                "model_id": "gpt-4"
             }
         }
 

@@ -1,7 +1,8 @@
 """AWS Bedrock LLM provider implementation."""
 import json
 import os
-from typing import Optional
+import asyncio
+from typing import Optional, AsyncGenerator
 from app.domain.ports.llm_port import LLMPort
 
 
@@ -89,18 +90,14 @@ class BedrockProvider(LLMPort):
             })
         
         try:
-            # Bedrock uses synchronous boto3, so we run it in a thread pool
-            loop = asyncio.get_event_loop()
-            with ThreadPoolExecutor() as executor:
-                response = await loop.run_in_executor(
-                    executor,
-                    lambda: client.invoke_model(
-                        modelId=self.model_id,
-                        body=body,
-                        contentType="application/json",
-                        accept="application/json"
-                    )
-                )
+            # Bedrock uses synchronous boto3, so we use asyncio.to_thread
+            response = await asyncio.to_thread(
+                client.invoke_model,
+                modelId=self.model_id,
+                body=body,
+                contentType="application/json",
+                accept="application/json"
+            )
             
             # Parse response based on model type
             response_body = json.loads(response["body"].read())
@@ -115,4 +112,31 @@ class BedrockProvider(LLMPort):
                 
         except Exception as e:
             raise RuntimeError(f"AWS Bedrock API error: {str(e)}") from e
+    
+    async def generate_stream(self, message: str) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming response using AWS Bedrock API.
+        
+        Note: Bedrock streaming requires invoke_model_with_response_stream.
+        This is a simplified implementation that yields the full response.
+        For true streaming, use Bedrock's streaming API.
+        
+        Args:
+            message: The input message/prompt.
+            
+        Yields:
+            Chunks of the generated response.
+            
+        Raises:
+            Exception: If API call fails.
+        """
+        # For now, generate full response and yield it in chunks
+        # TODO: Implement true streaming with invoke_model_with_response_stream
+        full_response = await self.generate(message)
+        
+        # Yield in chunks of 10 characters for demonstration
+        chunk_size = 10
+        for i in range(0, len(full_response), chunk_size):
+            yield full_response[i:i + chunk_size]
+            await asyncio.sleep(0.01)  # Small delay to simulate streaming
 
