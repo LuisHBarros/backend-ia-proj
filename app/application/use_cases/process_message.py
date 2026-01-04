@@ -96,39 +96,57 @@ class ProcessMessageUseCase:
                 )
             
             # Load or create conversation (with tracing)
+            # Graceful degradation: If repository fails, we can still process (without persistence)
             with tracer.start_as_current_span("repository.find_or_create_conversation") as repo_span:
-                if conversation_id:
-                    conversation = await self.repository.find_by_id(conversation_id)
-                    if conversation is None:
-                        # If conversation_id provided but not found, create a new one
-                        # This allows frontend to work even if conversation wasn't created via API first
-                        repo_span.set_attribute("action", "create_new")
-                        if self.logger:
-                            self.logger.info(
-                                "Conversation ID provided but not found, creating new conversation",
-                                provided_conversation_id=conversation_id,
-                                user_id=user_id
-                            )
-                        conversation = Conversation(user_id=user_id)
-                        # Note: The conversation will get a new ID when saved, ignoring the provided one
-                    else:
-                        # SECURITY: Verify that the conversation belongs to the authenticated user
-                        if conversation.user_id != user_id:
-                            repo_span.set_attribute("action", "access_denied")
-                            repo_span.set_status(Status(StatusCode.ERROR, "Access denied"))
+                conversation = None
+                try:
+                    if conversation_id:
+                        conversation = await self.repository.find_by_id(conversation_id)
+                        if conversation is None:
+                            # If conversation_id provided but not found, create a new one
+                            # This allows frontend to work even if conversation wasn't created via API first
+                            repo_span.set_attribute("action", "create_new")
                             if self.logger:
-                                self.logger.warning(
-                                    "Access denied: conversation belongs to different user",
-                                    conversation_id=conversation_id,
-                                    conversation_user_id=conversation.user_id,
-                                    authenticated_user_id=user_id
+                                self.logger.info(
+                                    "Conversation ID provided but not found, creating new conversation",
+                                    provided_conversation_id=conversation_id,
+                                    user_id=user_id
                                 )
-                            raise RepositoryError(
-                                f"Conversation {conversation_id} does not belong to user {user_id}"
-                            )
-                        repo_span.set_attribute("action", "found_existing")
-                else:
-                    repo_span.set_attribute("action", "create_new")
+                            conversation = Conversation(user_id=user_id)
+                            # Note: The conversation will get a new ID when saved, ignoring the provided one
+                        else:
+                            # SECURITY: Verify that the conversation belongs to the authenticated user
+                            if conversation.user_id != user_id:
+                                repo_span.set_attribute("action", "access_denied")
+                                repo_span.set_status(Status(StatusCode.ERROR, "Access denied"))
+                                if self.logger:
+                                    self.logger.warning(
+                                        "Access denied: conversation belongs to different user",
+                                        conversation_id=conversation_id,
+                                        conversation_user_id=conversation.user_id,
+                                        authenticated_user_id=user_id
+                                    )
+                                raise RepositoryError(
+                                    f"Conversation {conversation_id} does not belong to user {user_id}"
+                                )
+                            repo_span.set_attribute("action", "found_existing")
+                    else:
+                        repo_span.set_attribute("action", "create_new")
+                        conversation = Conversation(user_id=user_id)
+                except RepositoryError:
+                    # Re-raise security errors (access denied)
+                    raise
+                except Exception as e:
+                    # Graceful degradation: If repository is down, create in-memory conversation
+                    # User can still get LLM response, but conversation won't be persisted
+                    repo_span.set_attribute("action", "degraded_mode")
+                    repo_span.set_status(Status(StatusCode.ERROR, "Repository unavailable, using degraded mode"))
+                    if self.logger:
+                        self.logger.warning(
+                            "Repository unavailable, operating in degraded mode (no persistence)",
+                            error=str(e),
+                            user_id=user_id
+                        )
                     conversation = Conversation(user_id=user_id)
             
             # Create user message value object
@@ -164,10 +182,27 @@ class ProcessMessageUseCase:
             conversation.add_message(assistant_message)
             
             # Save conversation (with tracing)
+            # Graceful degradation: If save fails, return response anyway
             with tracer.start_as_current_span("repository.save_conversation") as save_span:
-                saved_conversation = await self.repository.save(conversation)
-                save_span.set_attribute("conversation.id", saved_conversation.id)
-                save_span.set_attribute("conversation.messages_count", len(saved_conversation.messages))
+                try:
+                    saved_conversation = await self.repository.save(conversation)
+                    save_span.set_attribute("conversation.id", saved_conversation.id)
+                    save_span.set_attribute("conversation.messages_count", len(saved_conversation.messages))
+                except Exception as e:
+                    # Graceful degradation: If save fails, use conversation as-is
+                    # User still gets response, but conversation may not be persisted
+                    save_span.set_status(Status(StatusCode.ERROR, "Save failed, using in-memory conversation"))
+                    if self.logger:
+                        self.logger.warning(
+                            "Failed to save conversation, using in-memory state",
+                            error=str(e),
+                            conversation_id=conversation.id if conversation.id else "new"
+                        )
+                    saved_conversation = conversation
+                    # Ensure conversation has an ID for response
+                    if not saved_conversation.id:
+                        import uuid
+                        saved_conversation.id = str(uuid.uuid4())
         
         # Log successful completion
         if self.logger:

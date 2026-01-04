@@ -26,9 +26,17 @@ class Settings(BaseSettings):
     llm_fallback_enabled: bool = True
     llm_fallback_chain: Optional[List[str]] = None  # Auto-configured if None
     llm_streaming_timeout: float = 30.0  # seconds
+    llm_failure_cooldown: int = 300  # seconds (5 minutes) - cooldown for failed models
+    llm_circuit_breaker_enabled: bool = True  # Enable circuit breaker for LLM calls
+    llm_circuit_breaker_failure_threshold: int = 5  # Failures before opening circuit
+    llm_circuit_breaker_recovery_timeout: int = 60  # seconds before attempting recovery
     
     # Database Configuration
     database_url: Optional[str] = None
+    db_pool_size: int = 10  # Number of connections to maintain in pool
+    db_max_overflow: int = 20  # Maximum overflow connections
+    db_pool_timeout: int = 30  # Seconds to wait for connection from pool
+    db_pool_recycle: int = 3600  # Seconds before recycling connections
     
     # Redis Configuration
     redis_url: Optional[str] = None

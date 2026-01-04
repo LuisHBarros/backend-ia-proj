@@ -72,7 +72,14 @@ class OpenAIProvider(LLMPort):
         
         # Cache for failed models (with cooldown)
         self.failed_models: dict[str, float] = {}  # model -> timestamp of last failure
-        self.failure_cooldown = 300  # 5 minutes in seconds
+        self.failure_cooldown = settings.llm_failure_cooldown  # Configurable cooldown
+        
+        # Circuit breaker state
+        self.circuit_breaker_enabled = settings.llm_circuit_breaker_enabled
+        self.circuit_breaker_failure_threshold = settings.llm_circuit_breaker_failure_threshold
+        self.circuit_breaker_recovery_timeout = settings.llm_circuit_breaker_recovery_timeout
+        self.circuit_breaker_failures: dict[str, int] = {}  # model -> failure count
+        self.circuit_breaker_opened_at: dict[str, float] = {}  # model -> timestamp when opened
         
         self._client = None
     
@@ -110,9 +117,73 @@ class OpenAIProvider(LLMPort):
         # Default: just use the primary model
         return [primary_model]
     
+    def _is_circuit_breaker_open(self, model: str) -> bool:
+        """
+        Check if circuit breaker is open for a model.
+        
+        Circuit breaker opens after threshold failures and stays open
+        for recovery_timeout seconds.
+        
+        Args:
+            model: The model to check.
+            
+        Returns:
+            True if circuit breaker is open, False otherwise.
+        """
+        if not self.circuit_breaker_enabled:
+            return False
+        
+        if model in self.circuit_breaker_opened_at:
+            opened_at = self.circuit_breaker_opened_at[model]
+            if time.time() - opened_at < self.circuit_breaker_recovery_timeout:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"Circuit breaker OPEN for {model} "
+                    f"(opened {int(time.time() - opened_at)}s ago, "
+                    f"recovery in {int(self.circuit_breaker_recovery_timeout - (time.time() - opened_at))}s)"
+                )
+                return True
+            else:
+                # Recovery timeout passed, reset circuit breaker
+                logger.info(f"Circuit breaker attempting recovery for {model}")
+                self.circuit_breaker_opened_at.pop(model, None)
+                self.circuit_breaker_failures[model] = 0
+        
+        return False
+    
+    def _record_circuit_breaker_failure(self, model: str):
+        """Record a failure for circuit breaker tracking."""
+        if not self.circuit_breaker_enabled:
+            return
+        
+        self.circuit_breaker_failures[model] = self.circuit_breaker_failures.get(model, 0) + 1
+        
+        if self.circuit_breaker_failures[model] >= self.circuit_breaker_failure_threshold:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(
+                f"Circuit breaker OPENED for {model} "
+                f"(failure count: {self.circuit_breaker_failures[model]})"
+            )
+            self.circuit_breaker_opened_at[model] = time.time()
+    
+    def _record_circuit_breaker_success(self, model: str):
+        """Record a success, resetting circuit breaker failure count."""
+        if not self.circuit_breaker_enabled:
+            return
+        
+        if model in self.circuit_breaker_failures:
+            self.circuit_breaker_failures[model] = 0
+        if model in self.circuit_breaker_opened_at:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Circuit breaker CLOSED for {model} (successful call)")
+            self.circuit_breaker_opened_at.pop(model, None)
+    
     def _should_skip_model(self, model: str) -> bool:
         """
-        Check if a model should be skipped due to recent failure.
+        Check if a model should be skipped due to recent failure or circuit breaker.
         
         Args:
             model: The model to check.
@@ -123,6 +194,11 @@ class OpenAIProvider(LLMPort):
         if not self.fallback_enabled:
             return False
         
+        # Check circuit breaker first
+        if self._is_circuit_breaker_open(model):
+            return True
+        
+        # Check cooldown
         if model in self.failed_models:
             last_failure = self.failed_models[model]
             if time.time() - last_failure < self.failure_cooldown:
@@ -134,8 +210,14 @@ class OpenAIProvider(LLMPort):
         return False
     
     def _mark_model_failed(self, model: str):
-        """Mark a model as failed (for cooldown)."""
+        """
+        Mark a model as failed (for cooldown and circuit breaker).
+        
+        This records the failure timestamp for cooldown and also
+        records the failure for circuit breaker tracking.
+        """
         self.failed_models[model] = time.time()
+        self._record_circuit_breaker_failure(model)
     
     def _get_client(self):
         """Lazy initialization of OpenAI client."""
@@ -574,8 +656,9 @@ class OpenAIProvider(LLMPort):
                 try:
                     async for chunk in self._try_stream_with_model(model, message, client):
                         yield chunk
-                    # Success, clear failure cache
+                    # Success, clear failure cache and circuit breaker
                     self.failed_models.pop(model, None)
+                    self._record_circuit_breaker_success(model)
                     return
                 except Exception as stream_error:
                     logger.warning(
@@ -590,8 +673,9 @@ class OpenAIProvider(LLMPort):
                             model, message, client, chunk_size=20, sleep_time=0.005
                         ):
                             yield chunk
-                        # Success, clear failure cache
+                        # Success, clear failure cache and circuit breaker
                         self.failed_models.pop(model, None)
+                        self._record_circuit_breaker_success(model)
                         return
                     except Exception as non_stream_error:
                         logger.warning(

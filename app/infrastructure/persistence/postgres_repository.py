@@ -45,11 +45,17 @@ class PostgresRepository(RepositoryPort):
                 "Set it as an environment variable or in .env file."
             )
         
-        # Create async engine
+        # Create async engine with connection pooling configuration
+        # Connection pooling is critical for performance and resource management
         self.engine = create_async_engine(
             self.database_url,
             echo=False,  # Set to True for SQL debugging
-            future=True
+            future=True,
+            pool_size=settings.db_pool_size,  # Number of connections to maintain
+            max_overflow=settings.db_max_overflow,  # Maximum overflow connections
+            pool_timeout=settings.db_pool_timeout,  # Timeout waiting for connection
+            pool_recycle=settings.db_pool_recycle,  # Recycle connections after this time
+            pool_pre_ping=True,  # Verify connections before using them
         )
         
         # Create async session factory
