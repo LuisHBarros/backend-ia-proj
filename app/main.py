@@ -158,6 +158,7 @@ async def shutdown_event():
         logger.warning(f"Error during shutdown: {e}")
 
 # Add CORS middleware (must be before other middlewares)
+# Security: Use specific methods and headers instead of wildcards
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -167,9 +168,14 @@ app.add_middleware(
         "http://127.0.0.1:3001",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],  # Only allow necessary HTTP methods
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+        "X-Correlation-ID",
+        "Accept",
+    ],  # Only allow necessary headers
+    expose_headers=["X-Correlation-ID"],  # Only expose necessary headers
 )
 
 # Add middleware for correlation ID tracking

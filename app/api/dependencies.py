@@ -173,7 +173,21 @@ async def check_rate_limit(user_id: str = Depends(get_authenticated_user_id)) ->
         # Re-raise rate limit exceptions
         raise
     except Exception as e:
-        # On error, allow request through (fail open)
+        # Log the error
         logger.error(f"Rate limit check error for user {user_id}: {e}")
-        # Don't block requests if rate limiting fails
+        
+        # Security: Fail closed in production, fail open only in development
+        if not settings.debug:
+            # Production: Fail closed - block request if rate limiting fails
+            # This prevents bypassing rate limits due to Redis failures
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Rate limiting service temporarily unavailable. Please try again later.",
+                headers={"Retry-After": "60"},
+            )
+        # Development: Fail open - allow request through for easier debugging
+        logger.warning(
+            "Rate limiting failed but allowing request through (development mode)",
+            user_id=user_id
+        )
 

@@ -23,8 +23,8 @@ class MessageRequestDTO(BaseModel):
     message: str = Field(
         ...,
         min_length=1,
-        max_length=10000,
-        description="The message content (1-10000 characters)"
+        max_length=4000,  # Match MAX_RESPONSE_CHARS from stream_message use case
+        description="The message content (1-4000 characters)"
     )
     conversation_id: Optional[str] = Field(
         None,
@@ -40,11 +40,51 @@ class MessageRequestDTO(BaseModel):
     )
     
     @validator("message")
-    def validate_message_not_empty(cls, v):
-        """Validate that message is not just whitespace."""
-        if not v or not v.strip():
+    def validate_message_content(cls, v):
+        """
+        Validate message content for security and correctness.
+        
+        This validator:
+        1. Ensures message is not empty or only whitespace
+        2. Performs basic XSS prevention by checking for suspicious patterns
+        
+        Args:
+            v: The message value to validate.
+            
+        Returns:
+            Stripped message value.
+            
+        Raises:
+            ValueError: If message is invalid or contains suspicious content.
+        """
+        # Strip whitespace
+        v = v.strip()
+        
+        # Check if empty after stripping
+        if not v:
             raise ValueError("Message cannot be empty or only whitespace")
-        return v.strip()
+        
+        # Basic XSS prevention - check for suspicious patterns
+        suspicious_patterns = [
+            "<script",
+            "javascript:",
+            "onerror=",
+            "onclick=",
+            "onload=",
+            "onmouseover=",
+            "vbscript:",
+            "data:text/html",
+        ]
+        
+        v_lower = v.lower()
+        for pattern in suspicious_patterns:
+            if pattern in v_lower:
+                raise ValueError(
+                    f"Message contains potentially malicious content. "
+                    f"Pattern detected: {pattern}"
+                )
+        
+        return v
     
     class Config:
         """Pydantic configuration."""
