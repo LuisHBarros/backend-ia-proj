@@ -21,11 +21,11 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  # Métricas da aplicação FastAPI (quando implementar)
+  # Métricas da aplicação FastAPI
   - job_name: 'chat-api'
     static_configs:
       - targets: ['chat-api:8000']
-    metrics_path: '/metrics'  # Endpoint de métricas (a ser implementado)
+    metrics_path: '/metrics'  # Endpoint de métricas do Prometheus
     scrape_interval: 10s
 
   # Métricas do Redis (requer redis_exporter)
